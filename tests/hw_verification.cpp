@@ -1,94 +1,126 @@
 #include <Arduino.h>
 #include "FlexitProtocol.h"
 
-// Hardware pins for ditt DIN-rail expansion board
-#define RE_DE_PIN 4 
-#define RX_PIN 16
-#define TX_PIN 17
+// Hardware-konfigurasjon
+#define RE_DE_PIN 4
+#define RX_PIN    16
+#define TX_PIN    17
 
-FlexitReadings currentData;
+// Globale variabler for testen
+uint8_t rawData[25];
+uint8_t cmdBuf[18] = {195, 4, 0, 199, 81, 193, 4, 8, 32, 15, 0, 34, 128, 4, 0, 22, 0, 0};
+bool lastHeaterStatus = false;
 
-void logSeparator() {
-    Serial.println("--------------------------------------------------");
+// --------------------------------------------------------------------------
+// 1. FLETCHER CHECKSUM (A/B) - Beregner kontrollsum for CS50
+// --------------------------------------------------------------------------
+void updateChecksum() {
+    int s1 = 0, s2 = 0;
+    for (int i = 5; i < 16; i++) {
+        s1 += cmdBuf[i];
+        s2 += s1;
+    }
+    cmdBuf[16] = s1 % 256;
+    cmdBuf[17] = s2 % 256;
 }
 
-// Funksjon for å sende rå-kommandoer med checksum-beregning og logg
-void sendTestCommand(const char* beskrivelse, uint8_t type, uint8_t reg, uint8_t verdi) {
-    uint8_t cmd[] = {0xC3, type, reg, verdi, 0x00};
-    
-    // Beregn checksum (sum av de 4 første bytes)
-    for(int i=0; i<4; i++) cmd[4] += cmd[i];
+// --------------------------------------------------------------------------
+// 2. INJEKSJONS-LOGIKK - Venter på luke i trafikken for å sende
+// --------------------------------------------------------------------------
+bool injectCommand(const char* beskrivelse, uint8_t fan, uint8_t heat) {
+    cmdBuf[11] = fan * 17;        // 17, 34, 51
+    cmdBuf[12] = heat ? 128 : 0;  // 128 = PÅ, 0 = AV
+    updateChecksum();
 
-    Serial.printf("[TX] %s: %02X %02X %02X %02X | CS: %02X\n", 
-                  beskrivelse, cmd[0], cmd[1], cmd[2], cmd[3], cmd[4]);
-
-    digitalWrite(RE_DE_PIN, HIGH);
-    delay(15); // Pre-transmission delay for RS485
-    Serial2.write(cmd, sizeof(cmd));
-    Serial2.flush();
-    digitalWrite(RE_DE_PIN, LOW);
+    Serial.printf("\n[TX] Forsøker: %s (Vifte:%d, Varme:%s)... ", 
+                  beskrivelse, fan, heat ? "PÅ" : "AV");
     
-    delay(1500); // Vent på at CS 50 prosesserer kommandoen
+    unsigned long start = millis();
+    while (millis() - start < 3000) { // 3 sekunder timeout
+        if (Serial2.available()) {
+            uint8_t b = Serial2.read();
+            // Vi ser etter synkroniserings-bytene fra CS50 (195 1)
+            if (b == 195) {
+                delay(2);
+                if (Serial2.peek() == 1) { 
+                    // Aggregatet er midt i en sending, vi venter til den er ferdig
+                    delay(50); 
+                    
+                    digitalWrite(RE_DE_PIN, HIGH);
+                    delay(5);
+                    Serial2.write(cmdBuf, 18);
+                    Serial2.flush();
+                    digitalWrite(RE_DE_PIN, LOW);
+                    
+                    Serial.println("SENDT OK!");
+                    return true;
+                }
+            }
+        }
+    }
+    Serial.println("FEILET (Ingen synk/bus busy)");
+    return false;
 }
 
+// --------------------------------------------------------------------------
+// 3. STATUS-AVLESING - Verifiserer resultatet
+// --------------------------------------------------------------------------
+void verifyStatus() {
+    Serial.print("[INFO] Venter på statusoppdatering fra aggregat...");
+    delay(2000); // Vent på at aggregatet prosesserer og sender ny status
+    
+    uint8_t buf[100];
+    int len = Serial2.readBytes(buf, 100);
+    
+    if (len >= 25) {
+        // Finn linje 15-signaturen i strømmen
+        for (int i = 0; i < len - 20; i++) {
+            if (buf[i+15] == 22 && buf[i+13] == 193) {
+                 FlexitReadings r = FlexitProtocol::decode(&buf[i+7], 25);
+                 if (r.isValid) {
+                     Serial.printf("\n >> BEKREFTET: Varme er nå %s, Vifte er trinn %d\n", 
+                                   r.heaterActive ? "PÅ" : "AV", r.fanSpeed);
+                     lastHeaterStatus = r.heaterActive;
+                     return;
+                 }
+            }
+        }
+    }
+    Serial.println(" Kunne ikke lese status.");
+}
+
+// --------------------------------------------------------------------------
+// SETUP & LOOP
+// --------------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
-    // UART2 konfigurasjon (standard for ESP32 RS485)
     Serial2.begin(19200, SERIAL_8N1, RX_PIN, TX_PIN);
+    Serial2.setTimeout(500);
+    
     pinMode(RE_DE_PIN, OUTPUT);
     digitalWrite(RE_DE_PIN, LOW);
 
+    Serial.println("\n===============================================");
+    Serial.println("   FLEXIT SL4R / CS50 FULL MASKINVARETEST");
+    Serial.println("   Tester Fletcher Checksum & Bus-Injection");
+    Serial.println("===============================================");
     delay(2000);
-    logSeparator();
-    Serial.println("FLEXIT CS 50 MASKINVARE-VERIFIKASJON v2.0");
-    Serial.println("Basert på Vongraven/Broch dekoding");
-    logSeparator();
 }
 
 void loop() {
-    // 1. LESESTATUS (POLLING)
-    Serial.println("\n[STEG 1] Polling av sensor-data...");
-    digitalWrite(RE_DE_PIN, HIGH);
-    uint8_t poll[] = {0xC3, 0x02, 0x01, 0x03, 0xC9}; // Standard forespørsel
-    Serial2.write(poll, sizeof(poll));
-    Serial2.flush();
-    digitalWrite(RE_DE_PIN, LOW);
+    // TEST 1: LASTSTYRING - SKRU AV VARME
+    if (injectCommand("LASTSTYRING (L1-BESKYTTELSE)", 2, 0)) {
+        verifyStatus();
+    }
+    
+    delay(10000); // Vent 10 sek før neste steg
 
-    uint8_t buf[64];
-    int len = Serial2.readBytes(buf, 64);
-
-    if (len > 0) {
-        Serial.printf("[RX] Mottok %d bytes fra aggregat.\n", len);
-        currentData = FlexitProtocol::decode(buf, len);
-        
-        if (currentData.isValid) {
-            Serial.printf(" >> Tilluft (T1):   %0.1f C\n", currentData.t1);
-            Serial.printf(" >> Uteluft (T3):   %0.1f C\n", currentData.t3);
-            Serial.printf(" >> Vifte-trinn:    %d\n", currentData.fanSpeed);
-            Serial.printf(" >> Ettervarme:     %s\n", currentData.heaterActive ? "AKTIV" : "AV");
-            Serial.printf(" >> Driftstimer:    %d t\n", currentData.operationalHours);
-        } else {
-            Serial.println(" [!] Dekoding feilet (ugyldig startbyte eller lengde)");
-        }
-    } else {
-        Serial.println(" [!] TIMEOUT: Ingen svar fra RS485. Sjekk kabling (A/B) og 24V strøm.");
+    // TEST 2: NORMAL DRIFT - SKRU PÅ VARME
+    if (injectCommand("RETUR TIL NORMAL DRIFT", 2, 1)) {
+        verifyStatus();
     }
 
-    // 2. KONTROLL-TEST (LASTSTYRING/HEATER LOCK)
-    logSeparator();
-    Serial.println("[STEG 2] Tester sperring av ettervarme (Laststyring)");
-    sendTestCommand("Sperrer Varme", 0x06, 0x1A, 0x00);
-    
-    // 3. KONTROLL-TEST (VIFTE)
-    Serial.println("[STEG 3] Tester vifte-hastighet");
-    sendTestCommand("Setter Vifte Høy (Trinn 3)", 0x06, 0x05, 0x03);
-
-    // 4. NULLSTILLING
-    Serial.println("[STEG 4] Returnerer til normal drift");
-    sendTestCommand("Opphever sperre", 0x06, 0x1A, 0x01);
-    sendTestCommand("Setter Vifte Normal (Trinn 2)", 0x06, 0x05, 0x02);
-
-    Serial.println("\nTEST-SYKLUS FULLFØRT. Venter 60 sekunder...");
-    logSeparator();
-    delay(60000);
+    Serial.println("\n[Sjekkpunkt] Er 'BEKREFTET' lik 'Forsøker' over?");
+    Serial.println("Venter 30 sekunder før ny testsyklus...");
+    delay(30000);
 }
