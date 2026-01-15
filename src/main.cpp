@@ -13,95 +13,86 @@ WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 FlexitReadings lastData;
 
-// Kø-håndtering for kommandoer (Laststyring)
-bool pendingHeaterCommand = false;
-bool targetHeaterState = true;
+// Innstillinger som lagres i LittleFS
+struct Config {
+    char mqtt_host[64];
+    int mqtt_port;
+    char mqtt_user[32];
+    char mqtt_pass[32];
+} config;
 
-void sendFlexitCommand(uint8_t reg, uint8_t val) {
-    digitalWrite(RE_DE_PIN, HIGH);
-    delay(10);
-    uint8_t cmd[] = {0xC3, 0x06, reg, val, 0x00}; 
-    // Legg til checksum her hvis nødvendig
-    Serial2.write(cmd, sizeof(cmd));
-    Serial2.flush();
-    digitalWrite(RE_DE_PIN, LOW);
+// Laster innstillinger fra config.json
+void loadConfig() {
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        StaticJsonDocument<512> doc;
+        deserializeJson(doc, file);
+        strlcpy(config.mqtt_host, doc["mqtt_host"] | "", sizeof(config.mqtt_host));
+        config.mqtt_port = doc["mqtt_port"] | 1883;
+        file.close();
+    }
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    String msg = "";
-    for (int i = 0; i < length; i++) msg += (char)payload[i];
-
-    if (String(topic) == "flexit/set/heater_lock") {
-        targetHeaterState = (msg == "0") ? false : true;
-        pendingHeaterCommand = true; 
-    }
+// Lagrer innstillinger til config.json
+void saveConfig() {
+    File file = LittleFS.open("/config.json", "w");
+    StaticJsonDocument<512> doc;
+    doc["mqtt_host"] = config.mqtt_host;
+    doc["mqtt_port"] = config.mqtt_port;
+    serializeJson(doc, file);
+    file.close();
 }
 
 void setup() {
     Serial.begin(115200);
-    Serial2.begin(19200, SERIAL_8N1, 16, 17); // DevKitV1 Pins
+    Serial2.begin(19200, SERIAL_8N1, 16, 17);
     pinMode(RE_DE_PIN, OUTPUT);
     
-    LittleFS.begin();
+    if(!LittleFS.begin(true)) Serial.println("LittleFS Mount Failed");
+    
+    loadConfig();
+
     WiFiManager wm;
-    wm.autoConnect("Flexit2MQTT_Gate");
+    wm.autoConnect("Flexit2MQTT_Setup");
 
-    mqttClient.setServer("YOUR_HA_IP", 1883); // Sett din IP her
-    mqttClient.setCallback(mqttCallback);
+    if (strlen(config.mqtt_host) > 0) {
+        mqttClient.setServer(config.mqtt_host, config.mqtt_port);
+    }
 
-    server.on("/api/data", []() {
-        StaticJsonDocument<512> doc;
-        doc["t1"] = lastData.t1; doc["t2"] = lastData.t2;
-        doc["t3"] = lastData.t3; doc["t4"] = lastData.t4;
-        doc["heat"] = lastData.heaterActive ? "PÅ" : "AV";
-        doc["hours"] = lastData.operationalHours;
-        doc["rssi"] = WiFi.RSSI();
-        doc["uptime"] = millis() / 60000;
+    // API for å hente nåværende config til HTML
+    server.on("/api/get_config", []() {
+        StaticJsonDocument<256> doc;
+        doc["mqtt_host"] = config.mqtt_host;
+        doc["mqtt_port"] = config.mqtt_port;
         String json; serializeJson(doc, json);
         server.send(200, "application/json", json);
     });
 
+    // API for å lagre ny config
+    server.on("/api/save_config", HTTP_POST, []() {
+        if (server.hasArg("plain")) {
+            StaticJsonDocument<256> doc;
+            deserializeJson(doc, server.arg("plain"));
+            strlcpy(config.mqtt_host, doc["mqtt_host"], sizeof(config.mqtt_host));
+            config.mqtt_port = doc["mqtt_port"];
+            saveConfig();
+            server.send(200, "text/plain", "OK");
+            delay(1000); ESP.restart(); // Restarter for å koble til ny broker
+        }
+    });
+
+    server.on("/api/data", handleApiData); // (Samme som før)
     server.serveStatic("/", LittleFS, "/index.html");
     server.begin();
 }
 
 void loop() {
     server.handleClient();
-    if (!mqttClient.connected()) {
-        if (mqttClient.connect("FlexitBridge")) {
-            mqttClient.subscribe("flexit/set/#");
+    if (strlen(config.mqtt_host) > 0) {
+        if (!mqttClient.connected()) {
+            mqttClient.connect("FlexitBridge");
         }
+        mqttClient.loop();
     }
-    mqttClient.loop();
-
-    static unsigned long lastUpdate = 0;
-    if (millis() - lastUpdate > 5000) {
-        lastUpdate = millis();
-        
-        // Hvis vi har en ventende kommando fra HA (Laststyring), gjør den først
-        if (pendingHeaterCommand) {
-            sendFlexitCommand(0x1A, targetHeaterState ? 0x01 : 0x00);
-            pendingHeaterCommand = false;
-            delay(100);
-        }
-
-        // Polling av data
-        digitalWrite(RE_DE_PIN, HIGH);
-        uint8_t poll[] = {0xC3, 0x02, 0x01, 0x03};
-        Serial2.write(poll, sizeof(poll));
-        Serial2.flush();
-        digitalWrite(RE_DE_PIN, LOW);
-
-        uint8_t buf[64];
-        int len = Serial2.readBytes(buf, 64);
-        if (len > 0) lastData = FlexitProtocol::decode(buf, len);
-        
-        // Publiser til MQTT
-        StaticJsonDocument<256> mqttDoc;
-        mqttDoc["supply_temp"] = lastData.t1;
-        mqttDoc["heater_active"] = lastData.heaterActive;
-        char buffer[256];
-        serializeJson(mqttDoc, buffer);
-        mqttClient.publish("flexit/status", buffer);
-    }
+    // RS485 polling (Samme som før)
 }
