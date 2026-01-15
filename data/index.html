@@ -1,42 +1,103 @@
-<div id="set" class="modal">
-    <div class="modal-content">
-        <h2>Systeminnstillinger</h2>
-        <label>MQTT Broker IP (Home Assistant):</label>
-        <input type="text" id="mqtt_host" placeholder="f.eks. 192.168.1.50">
-        <label>Port:</label>
-        <input type="number" id="mqtt_port" value="1883">
-        
-        <div style="margin-top:20px; display:flex; gap:10px;">
+<!DOCTYPE html>
+<html lang="no">
+<head>
+    <meta charset="UTF-8">
+    <title>Flexit2MQTT</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        :root { --primary: #0056b3; --bg: #f0f2f5; --card: #ffffff; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); margin: 0; padding: 15px; }
+        .container { max-width: 500px; margin: auto; background: var(--card); padding: 25px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        header { border-bottom: 2px solid var(--bg); padding-bottom: 15px; margin-bottom: 20px; display: flex; justify-content: space-between; }
+        .sys-info { font-family: monospace; font-size: 11px; color: #65676b; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .card { background: #f8f9fa; padding: 15px; border-radius: 12px; border-left: 4px solid var(--primary); }
+        .card h3 { margin: 0; font-size: 10px; text-transform: uppercase; color: #65676b; }
+        .value { font-size: 24px; font-weight: 600; margin: 5px 0; }
+        .status-tag { font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: #e4e6eb; }
+        .heat-active { border-left-color: #fa3e3e; background: #fff5f5; }
+        .modal { display:none; position:fixed; z-index:10; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.6); }
+        .modal-content { background:white; margin:10% auto; padding:25px; width:85%; max-width:400px; border-radius:12px; }
+        input { width:100%; padding:10px; margin:8px 0 15px 0; border:1px solid #ddd; border-radius:6px; box-sizing: border-box; }
+        .btn { background:var(--primary); color:white; border:none; padding:12px; border-radius:8px; cursor:pointer; width:100%; font-weight:600; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1 style="margin:0; font-size:20px;">Flexit SL4R</h1>
+                <div class="sys-info">
+                    TID: <span id="time">--:--</span> | WIFI: <span id="rssi">--</span> | UP: <span id="uptime">--</span>
+                </div>
+            </div>
+            <button onclick="openSettings()" style="background:none; border:none; font-size:22px; cursor:pointer;">⚙️</button>
+        </header>
+
+        <div class="grid">
+            <div class="card"><h3>Tilluft (T1)</h3><p class="value" id="t1">--</p></div>
+            <div class="card"><h3>Uteluft (T3)</h3><p class="value" id="t3">--</p></div>
+            <div id="h-card" class="card">
+                <h3>Ettervarme</h3>
+                <p class="value" id="heat">--</p>
+                <span id="l-tag" class="status-tag" style="display:none; background:#ffdada; color:#cc0000;">LÅST (L1 LAST)</span>
+            </div>
+            <div class="card"><h3>Driftstimer</h3><p class="value" id="hours" style="font-size:18px;">--</p></div>
+        </div>
+        <button class="btn" style="margin-top:20px;" onclick="location.reload()">FORFRISK</button>
+    </div>
+
+    <div id="set" class="modal">
+        <div class="modal-content">
+            <h2 style="margin-top:0;">Innstillinger</h2>
+            <label>MQTT Broker IP:</label>
+            <input type="text" id="mqtt_host">
+            <label>MQTT Topic:</label>
+            <input type="text" id="mqtt_topic">
+            <label>NTP Tidsserver:</label>
+            <input type="text" id="ntp_server">
             <button class="btn" onclick="saveSettings()">LAGRE & RESTART</button>
-            <button class="btn" style="background:#65676b;" onclick="document.getElementById('set').style.display='none'">AVBRYT</button>
+            <button class="btn" style="background:#65676b; margin-top:10px;" onclick="document.getElementById('set').style.display='none'">AVBRYT</button>
         </div>
     </div>
-</div>
 
-<script>
-    // Hent nåværende config når modal åpnes
-    function openSettings() {
-        fetch('/api/get_config')
-            .then(r => r.json())
-            .then(d => {
+    <script>
+        function update() {
+            fetch('/api/data').then(r => r.json()).then(d => {
+                document.getElementById('t1').innerText = d.t1 + "°C";
+                document.getElementById('t3').innerText = d.t3 + "°C";
+                document.getElementById('heat').innerText = d.heat;
+                document.getElementById('hours').innerText = d.hours + " t";
+                document.getElementById('rssi').innerText = d.rssi + " dBm";
+                document.getElementById('uptime').innerText = d.uptime + "m";
+                document.getElementById('time').innerText = d.time;
+                
+                document.getElementById('h-card').className = d.heat === "AKTIV" ? "card heat-active" : "card";
+                document.getElementById('l-tag').style.display = d.locked ? "inline" : "none";
+            });
+        }
+
+        function openSettings() {
+            fetch('/api/get_config').then(r => r.json()).then(d => {
                 document.getElementById('mqtt_host').value = d.mqtt_host;
-                document.getElementById('mqtt_port').value = d.mqtt_port;
+                document.getElementById('mqtt_topic').value = d.mqtt_topic;
+                document.getElementById('ntp_server').value = d.ntp_server || "no.pool.ntp.org";
                 document.getElementById('set').style.display = 'block';
             });
-    }
+        }
 
-    // Send ny config til ESP32
-    function saveSettings() {
-        const data = {
-            mqtt_host: document.getElementById('mqtt_host').value,
-            mqtt_port: parseInt(document.getElementById('mqtt_port').value)
-        };
-        fetch('/api/save_config', {
-            method: 'POST',
-            body: JSON.stringify(data)
-        }).then(() => {
-            alert("Innstillinger lagret. Enheten restarter...");
-            location.reload();
-        });
-    }
-</script>
+        function saveSettings() {
+            const cfg = {
+                mqtt_host: document.getElementById('mqtt_host').value,
+                mqtt_topic: document.getElementById('mqtt_topic').value,
+                ntp_server: document.getElementById('ntp_server').value
+            };
+            fetch('/api/save_config', { method: 'POST', body: JSON.stringify(cfg) })
+                .then(() => { alert("Lagret! Restarter..."); location.reload(); });
+        }
+
+        setInterval(update, 3000); update();
+    </script>
+</body>
+</html>
