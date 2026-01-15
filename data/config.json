@@ -1,0 +1,11 @@
+{
+  "mqtt_host": "192.168.1.100",
+  "mqtt_port": 1883,
+  "mqtt_user": "",
+  "mqtt_pass": "",
+  "mqtt_topic": "flexit",
+  "ha_discovery": true,
+  "temp_setpoint": 22,
+  "ntp_server": "no.pool.ntp.org",
+  "timezone": "CET-1CEST,M3.5.0,M10.5.0/3"
+}
