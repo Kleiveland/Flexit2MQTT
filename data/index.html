@@ -1,56 +1,42 @@
-<!DOCTYPE html>
-<html lang="no">
-<head>
-    <meta charset="UTF-8">
-    <title>Flexit2MQTT</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Inter', sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }
-        .container { max-width: 500px; margin: auto; background: white; padding: 25px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        header { border-bottom: 2px solid #f0f2f5; padding-bottom: 15px; margin-bottom: 20px; }
-        .sys-status { font-family: monospace; font-size: 11px; color: #65676b; margin-top: 5px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .card { background: #f8f9fa; padding: 15px; border-radius: 12px; border-left: 4px solid #0056b3; }
-        .card h3 { margin: 0; font-size: 10px; text-transform: uppercase; color: #65676b; }
-        .value { font-size: 24px; font-weight: 600; margin-top: 5px; }
-        .heat-on { border-left-color: #fa3e3e; background: #fff5f5; }
-        .btn { width: 100%; background: #0056b3; color: white; border: none; padding: 15px; border-radius: 8px; font-weight: 600; margin-top: 15px; cursor: pointer; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <h1 style="margin:0; font-size:20px; color:#0056b3;">Flexit2MQTT Control</h1>
-            <div class="sys-status">
-                MQTT: <span id="mqtt">OK</span> | WIFI: <span id="rssi">--</span> | UPTIME: <span id="uptime">--</span>
-            </div>
-        </header>
+<div id="set" class="modal">
+    <div class="modal-content">
+        <h2>Systeminnstillinger</h2>
+        <label>MQTT Broker IP (Home Assistant):</label>
+        <input type="text" id="mqtt_host" placeholder="f.eks. 192.168.1.50">
+        <label>Port:</label>
+        <input type="number" id="mqtt_port" value="1883">
         
-        <div class="grid">
-            <div class="card"><h3>Tilluft (T1)</h3><p class="value" id="t1">--</p></div>
-            <div class="card"><h3>Uteluft (T3)</h3><p class="value" id="t3">--</p></div>
-            <div class="card" id="h-card"><h3>Ettervarme</h3><p class="value" id="heat">--</p></div>
-            <div class="card"><h3>Driftstimer</h3><p class="value" id="hours" style="font-size:18px;">--</p></div>
+        <div style="margin-top:20px; display:flex; gap:10px;">
+            <button class="btn" onclick="saveSettings()">LAGRE & RESTART</button>
+            <button class="btn" style="background:#65676b;" onclick="document.getElementById('set').style.display='none'">AVBRYT</button>
         </div>
-
-        <button class="btn" onclick="location.reload()">OPPDATER STATUS</button>
-        <footer style="margin-top:20px; text-align:center; font-size:10px; color:#bcc0c4;">v2.0.0 | Kleiveland Tech</footer>
     </div>
+</div>
 
-    <script>
-        function update() {
-            fetch('/api/data').then(r => r.json()).then(d => {
-                document.getElementById('t1').innerText = d.t1 + "°C";
-                document.getElementById('t3').innerText = d.t3 + "°C";
-                document.getElementById('heat').innerText = d.heat;
-                document.getElementById('hours').innerText = d.hours + " t";
-                document.getElementById('rssi').innerText = d.rssi + " dBm";
-                document.getElementById('uptime').innerText = d.uptime + " min";
-                document.getElementById('h-card').className = d.heat === "PÅ" ? "card heat-on" : "card";
+<script>
+    // Hent nåværende config når modal åpnes
+    function openSettings() {
+        fetch('/api/get_config')
+            .then(r => r.json())
+            .then(d => {
+                document.getElementById('mqtt_host').value = d.mqtt_host;
+                document.getElementById('mqtt_port').value = d.mqtt_port;
+                document.getElementById('set').style.display = 'block';
             });
-        }
-        setInterval(update, 3000); update();
-    </script>
-</body>
-</html>
+    }
+
+    // Send ny config til ESP32
+    function saveSettings() {
+        const data = {
+            mqtt_host: document.getElementById('mqtt_host').value,
+            mqtt_port: parseInt(document.getElementById('mqtt_port').value)
+        };
+        fetch('/api/save_config', {
+            method: 'POST',
+            body: JSON.stringify(data)
+        }).then(() => {
+            alert("Innstillinger lagret. Enheten restarter...");
+            location.reload();
+        });
+    }
+</script>
